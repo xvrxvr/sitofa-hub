@@ -2,7 +2,7 @@
 
 #include "interf.h"
 
-class Peer : public Interf::ErrorReporter {
+class Peer : public Interf::ErrorReportable {
     int srv_fd=-1;
     int clnt_fd=-1;
     int stop_fd=-1;

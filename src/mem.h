@@ -9,7 +9,7 @@ Minimal memory size is 16 bytes, maximum defined by configuration.
 Memory allocation granularity - 4K (page size)
 */
 
-class MemAlloc : public Interf::ErrorReporter {
+class MemAlloc : public Interf::ErrorReportable {
     static constexpr int MinBlockSize = 16; // Minimum block size
     static constexpr int MemPageSize = 4096; // Memory page size. Used to round all memory allocation requests
 
