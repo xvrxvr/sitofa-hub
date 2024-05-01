@@ -1,0 +1,227 @@
+﻿FPGA system consists of:
+1. FPGA board (SitoFA)
+2. Sito supplier IP for communication between RTL and software (SitoHUB IP)
+3. sitofa-hub service on Host that take care about all aspects FPGA and soft coexistance
+4. User provided RTL
+5. User provided GUI or Command Line software part.
+PS. Sito provides reference design for RTL and Soft - LabBench system (Logic Analyser + Pattern Generator + 1 ch Oscilloscope)
+
+System Highlightes:
+
+SitoHUB IP:
+1. Provide bidirectional communication channel between User RTL and Software. Channel represented by 2 AXI4-Stream interfaces (32 bit)
+2. Support up to 63 User supplied modules to connect to.
+3. On RTL side directly support up to 15 User modules. 63 User modules required some kind of hierarchical router in RTL (no reference design provided by Sito for this configuration)
+4. Communication to RPi - SPI + 2 dedicated wire. SPI speed supported up to maximum, that will work on RPi (65 MHz for sure, more - who knows?)
+
+sitofa-hub:
+1. Linux service, provided by Sito
+2. Manage all interaction between FPGA and User Application
+3. Support direct access by commands from shell (via special FIFO file)
+4. Support loading of FPGA images (from User Application and from Command line).
+5. Support locking of FPGA image loading from User Application (for RTL debugging purpose)
+6. Support multiple User Application runs on common FPGA image (software sharing)
+7. Support remote debbuging from Vivado (via builtin XVC server)
+8. Support JTAG for debugging/image loading purpose:
+    a. BitBang mode. Require connection of JTAG pins in SitoFA board to RPi header (in the same board)
+    b. Any FTDI chip, supporting MSSE. Require appropriate adapter to be installed in RPi and connected to JTAG socket on SitoFA board
+
+=============================================================
+sitofa-hub and infrastructure.
+
+I. Configuration
+sitofa-hub controlled by configuration JSON file - /etc/default/sito-fpga-hub.json
+It contains all hardware related information about board (including size of FPGA chip). 
+Also it contains default configuration for external services, provided by Hub.
+Also it contains URL for remote build server (for missing FPGA images)
+Some info can be stored in ID EEPROM (?)
+
+II. JSON usage.
+sitofa-hub use JSON for almost all information exchange betweeb Hub and rest of the world.
+JSON, send to Hub, always contains these fields:
+    "cmd" - Command to execute
+
+Any command, sent to Hub, will be acknoledged by JSOn, sent back. There are 2 possible acknoledge format:
+{
+    "result": "ok",
+    ...
+}
+for successive command execution. Extra field can be included in answer in this case (depends on command been executed)
+{
+    "result": "error",
+    "message": "<Human readable message>"
+    ...
+}
+for unsuccessfull result of command execution. Also extra fields can be included in answer
+
+sitofa-hub will send only JSON answers or asynchronous JSON messages:
+{
+    "async": "<message type>",
+    ....
+}
+Asynchronous messages generated as a result of activating of some statistics generator (or other generator) in Hub itself.
+
+No any other JSON message types are possible.
+
+III. Binary messages
+For exchange between RTL and User Application JSON message is not used. Instead special form on Binary message used, as a more effective.
+These message formatted as fix length words (64 bit) and contains:
+1. Message type
+2. Originator/Destination/Other info of message
+3. Pointer to message body
+Message payload passed in preallocated buffer in memory, shared between Hub and User Application
+
+Binary messages occupied exactly 1 64 bit slot, with exception:
+1. Notification message (#7). Message itself contains only address information (origing/target/ref to image (if any)). 
+   Notification body send in next message (as exact copy of original message, that issue this Notification)
+   Notification message normally do not carry on Packet bosy (for any In/Out Packets from/to Device). But you can activate Packet Body copy during Application loading.
+   In this case your Applicqation will have its own memory buffer for Body of Packages of Notification Messages and shift to this buffer you will got in Notification Message itself.
+   This Package body should be relinquish later as any Package Body (see later)  
+2. JSON wrapped message. Message started with Binary message with code '{' (low byte of 64 bit word) and JSON span entire message.
+   JSON wrapped message can be send by Hub or by User Application. Any JSON message from User Application will be acknoledged by "result" JSON message from Hub (as usual for JSON message).
+   JSON messages from Hub do not required in acknoledge (they are all async notifications, except acknoledges of Application initiated messages) 
+
+IV. RTL/User Application internals.
+
+** RTL Pack file **
+
+Main source of all information about RTL is sitofa system is a RTL Pack file. This is a zip archive, that contains:
+1. Project configuration file in HSON format. Used to define project (see next paragraph)
+2. Set of FPGA images for different FPGA chips. sitofa-hub will load appropriate image (or image from local cache, if available. Cache hase preference). 
+   There is reduced set of image files possible. If sitofa-hub get request to load of missing image it check:
+    a. If this size listed in list of prohibited size. If yes - it will abort loading with appropriate message
+    b. Otherwise, Check if remote build site (if any) has image. If yes - load it, put in local cache and load.
+    b. Otherwise, Request to build will be sent to appropriate build site (as configured in sitofa-hub config). Loading aborted with appropriate message.
+    c. Otherwise failed with appropriate message.
+
+
+** Project **
+
+Top of RTL/Soft HUB and Application configuration is a 'Project'. Project defined purpose of this configuration. Sito provide one reference Project - LabBench.
+Project selected in RTL Pack configuration file (see later) and in 'Login' command from User Application (see later). RTL Pack configuration Project defines what exactly implemented in FPGA 
+and User Application use Project as indication of its intend to implement GUI (or something else) for it.
+Project defined by UUID (because its identity should be global unique) and by human readable name (can be not unique).
+Project can have different configuration of RTL level. Different both in numeric features (such as bus width, memory deepth, etc) and in set of implemented features (includes or not Logic Analyser, Patter Generation and Oscilloscope)
+
+Pack configuration file also contains description of Project itself:
+1. Project name
+2. Project UUID
+3. Project Version
+4. Project description (optional). String with human readable description about what this project is.
+5. Project Version description (optional). String with human readable descriptionh about this particular Version (can be in form 'whats new' or similar)
+6. List of unsupported FPGA sizes. This list used to suppress any attempts to generate image for Project on FPGA with insufficient size.
+7. Whole Project sharing mode.
+   a. "exclusive" - Only one User Application can be run on this Project
+   B. "shared"    - Any number of User Application can be run on this Project
+   C. "rw"        - Writer/readers usage model. Only one Application can control this Project (read/write to all Devices), but any number of Application could observe this Project (read from its Devices)
+
+
+** Device **
+
+On RTL level Project consists of RTL HUB, some route logic and a set of 'Devices'. Each Device implemets one of Project functions. LabBench has devices:
+0. SystemCtrl - Generic System Controller device (part of RTL HUB)
+1. Logic Analyser
+2. Pattern Generastor
+3. Oscilloscope
+4. Triggers - Used to start/stop data acusition by rest of system. Controlled by Logic Anylier and Oscilloscope
+
+RTL Pack configuration file contains list of all Deviecs, implemented inside RTL, with their configuration.
+This configuration includes both Device specific options and generic System options:
+1. Device numeric ID. It will be used to address Device inside Project for all software side. On RTL side it also used to route data stream between RTL HUB and Device module. 
+   Reference design of RTL supports ID in range 0-15. Software implementation allows more wide range 0-63. To enable this range some modification on RTL side required: addition of intermidiate AXI Stream Router 
+   (XILINX provided RTL-IP support only up to 16 endpoints)
+2. Devisce name. Used for debug/statistics purpose. Should be unique inside Project. Don't require to be globaly unique.
+3. Device UUID. Required only for general purpose Devices, which can be used not only in this Project. For now only one General device exists - SystemCtrl
+4. Device Version. Required. Will specify Device version for use in Version check during User Application loading. Devices with incompatible versions will be unaccessible to User Application.
+5. Setup for Device buffers size - maximum size (in bytes) for input and output buffers for this Device. Sizes defined maximum size of Packet, that can be traversed to/from Device. These numbers should be precise,
+   because Packet of larger size, that was requested, will raise run-time fatal error.
+6. Overall memory size. Defined total size for all buffers for all devices in system. These sizes are purely hints for sitofa-hub to allocate enough memory for Packets taking in an account spare buffers, buffers queues, etc.
+   Also these knobs include one ('max') that turn on dynamic buffer allocation. This know will define ABSOLUTE maximum for all buffers. Really allocated memory will be less.
+7. Device shared usage model.
+   a. "exclusive" - Only one User Application can use this Device.
+   B. "shared"    - Any number of User Application can use this Device.
+   C. "rw"        - Writer/readers usage model. Only one Application can Write to this Device, but any number of Application could Read from it.
+
+** Client **
+
+Client is an User Application that connects to sitofa-hub and wortks with FPGA. 
+
+During connection process (call it 'Login') Application pass to Hub information about Project and configuration it expected to see. If all this configuration can be satisfied, Hub loads FPGA image and register 
+User Application as local Client. Information for Login passed to Hub as part of 'login' command in JSON payload. There are different sections on Login info exists:
+
+User Application Identity:
+    1. "pid" - Pid of User Process (for monitoring purpose)
+    2. "name" - User Application human readable name [optional]. Used for debugging and messaging purpose.
+
+Project/environment definition:
+    1. "uuid" - UUID of Project to load/join. Can be absent if RTL Pack file specified (or if "mode" of Application is "observer")
+    2. "pack" - RTL Project pack. This file contains definition for Project and FPGA images to load. Used only in "main" mode (or "any", if it runs as "main")
+    3. "mode" - Sharing mode of this User Application (used to check possibility to accept of Login for this Application):
+        a. "main"     - Main application. Will fully control FPGA.
+        b. "reader"   - Reader. Can only passivealy read FPGA. Currently loaded RTL Pack file for Reader will be used.
+        c. "any"      - Request to run as Main, but if this violate sharing that fail back to Reader.
+        d. "observer[+]" - Global observer. Do not interact with FPGA (but can peek FPGA traffic via 'Notification' interface). 
+                        Notification records normally do not include Packet payload, but it will include for "observer+" mode.
+                        Do not load its own RTL Prohect file. Can be loaded with any Project (or without Project at all)
+                        Used to implement general control/monitoring tools for sitofa-hub (one such tool will be provided by Sito)
+    4. "devices" - List of required Devices. Contains devices names/uuid (the same as in Project Definition file) and usage information for each device:
+        a. "version"/"min-version" - Expected Version of Device (or range of versions). If Device in Project File has different version this Device couldn't be used.
+        b. "mode": "r"|"w"|"rw" - Defines how User Application want to use device (if Application mode "any" resolved itself as "reader" all modes will be reset to "r").
+                                  Mode specified will be checked against mode in RTL Project pack, RTL sharing mode and current mode of User Application.
+                                  If sharing violation will be detected that this Device will be withdrawn from list of available Devices.
+        c. "optional" - Set to true if User Applicatioin can function without this Device. Without this flag any unavailable Device will abort User Application loading.
+        d. "virtual" - Virtual device. There is no RTL Device to it. sitofa-hub will create Device with input directly connected to output (loopback device) and assign to it first unused numeric Device ID.
+                       This kind of Device used to connect different User Applications which required interract between each other without sitofa-hub intermission.
+        e. "history" - Turn on History for packets from this Device. Hub will holds required number of last outgoing packets to pass it to newly attached User Applications.
+        f. "buf"     - Override of required buffer-size/message-size for this device
+
+In case of successfull Login Hub returns Ok message with payload listed all connected Devices. Each Device in such record will contain effective configuration information 
+(collected from RTL Pack file and Client Login request) and numeric Device ID.
+Devices which were rejected to connect but have "optional" flag in Login request will be listed also, but instead of device info they will got "error" entry.
+
+After successfull connection Client got Memory buffer file and extra FIFO (named pipe) for outgoing Binary messages. Clents incoming FIFO (by which he got this answer) become incoming Binary message interface.
+
+** Command Line Client **
+
+So called Command Line Client is an one time call to sitofa-hub through its Public Unix domain socket (message mode) (/var/sito/fpga-hub). This call will not create session and not carry on any state information.
+Most of Command Line JSON commands can be used in ordinary Clients also (but not all - they marked in command description)
+=================================================================================
+sitofa-hub runtime interaction
+
+** Client login **
+
+Client interact with Hub via 3 files:
+1. Global entry point Unix domain socket - /var/sito/fpga-hub. Used to initiate Login session.
+2. Private Unix Domain socket (with abstract name, generated by HUB) for communicate between Client and HUB. dynaically created by sitofa-hub
+3. Memory mapped file for Buffers, dynamically created by sitofa-hub and passed by handle back as part of Login answer (in auxilarry message SCM_RIGHTS). Created unnamed and erase-on-close.
+
+Stages of Login:
+2. Client connect to public Unix Domain socket (/var/sito/fpga-hub) and send Login request there.
+3. Client got answer
+4. Client closed public UNIX Domain socket
+5. If field "result" of answer is "error" client exit
+7. Client mmap file from answer (aux SCM_RIGHTS") with size ("buf-size") and use that area as Memory Buffer for Packets
+
+** Packet send/recieve **
+
+Packets are exchanged between Hub and Client in both direction independently. Both parties used pool of Packets to send data. Packet for data allocated from pool, send and than returned back to pool when reciever
+done with it.
+
+Sending flow:
+1. Originator allocate Packet from pool. Shift from Memory Buffer to data area of Packet used as Packet ID
+2. Packet sent with Binary record #1.
+3. Destination process Packet and ->
+4. Send Binary Record #2 back to Originator with Packet ID
+5. Originator returned packet ID back to pool
+
+** Client Packet Pool management **
+
+On start Packet Pool on Client is empty. Before he could send any Packet he should allocate some Packets from Hub to his Pool. Client can also return some Packets from his Pool back to Hub, if he doens't need them anymore.
+
+Binary record #3 (Client -> Hub) used for Packet allocation.
+Hub answered by record #4 or #5:
+1. #4 with Memory shift - 1 Packet allocated
+2. #4 with -1 as Memory shift + JSON wrapped {"result": "error" m...} packet - if allocation is failed.
+3. #5 - Multiple Packets allocated
+
+Binary record #6 (Client -> Hub) used to return allocated Packet(s) back to Hub.

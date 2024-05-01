@@ -1,0 +1,455 @@
+﻿Various JSONs in SitoFHub (and communication channels)
+======================================================
+
+sitofa-hub config (placed in /etc/default/sito-fpga-hub.json)
+
+{
+    "fpga": 7|15|25|50,    // [mandatory, no default]
+    "mode": "HUT" | "HUB", // [optional, default "HUT"]
+    "pins": {  // All optional (default values shown, if any). Values can be just number (pin number on 40Pin HUT header) or "gpio<n>" or "GPIO<n>"
+        "frame": "GPIO7",
+        "int": "GPIO22",
+        "init": "GPIO18", // Optional. If absent - INITB not used
+        "TMS": -,
+        "TCK": -,
+        "TDI": -,
+        "TDO": -
+     },
+     "spi-mode": true, // Optional. Set to 'false' is slave-spi bitstream load to FPGA not supported by board
+     "spi-freq", "62.5M", // Optional 
+     "FTDI": { // Optional
+        "mode": "auto"|"enable"|"disable", // default - "auto"
+        "vid": <vendor ID in hex>, // default - 0x0403
+        "pid": <product id>, // default: try 0x6010 - FT2232H, 0x6011 - FT4232H, 0x6014 - FT232H in order    | 2232D ?
+        "serial": "<...>" // default: do not check
+        "index": "A"|"B" // default "A"
+        "freq": "50M",
+        "freq-lock": true, // optional
+        "init": [ // optional initialization sequence. Run on XVC start. Array can be ommited and 1 internal Object used directly
+          {"low": 5, "high": [7,9], "input": 8} // Pins 1-4 prohibited to use (this is JTAG pins)
+           or
+          {"delay": "1ms"},
+           ...
+        ],
+        "fini": [...] // Optional finalization sequence. Run on XVC end
+        "open": [...] // Optional sequence runs rigth after FTDI open
+        "close": [...] // Optional sequence runs rigth before FTDI close
+     },
+     "XVC": {  // optional
+        "mode": "auto"|"enable"|"disable", // default - "disable"
+        "port": 2542,
+        "buf-size": 2048
+     },
+     "image-cache": { // All Optional
+        "fs": "/path/to/fpga/images/", // Path where cached/preloaded FPGA images collected. You can put there your own image, and it will override one from this Pack
+                                       // Files there will be stored under name <project-uuid>/<pack-file-name>/img(7|15|25|50).bin
+        "req-url": "http://....",      // Path to automatic request for new images from Sito or local site
+        "req-key": "..."               // Key for image request (?)
+     }
+}
+------------------------------------------------------------
+File of Packet to load (zip archive)
+
+project.json - Pack project description
+img7.bin     - FPGA images for 7/15/25/50 chips
+img15.bin
+img25.bin
+img50.bin
+
+------------------------------------------------------------
+
+Project configuration (file /project.json in zip file with Packet to load)
+
+{
+    "name": "project name", // Mandatory. User readable name of Project
+    "uuid": <UUID of Project>, // Mandatory, machine readable ID of project
+    "version": "xx.yy[.zz]", // Mandatory. Version of Project. Different Packet Files could be created for the same project, they can differ in set of included Devices and it's configuration
+    "version-description": ..., // Optional. Human readable multiline string with configuration description
+    "description": ..., // Optional. Human readable multiline string with Project description
+    "buf-size": { // all optional
+        "min": <xxx>|"xxxK"|"xxxM", // optional, Minimum buffer size for all Devices (by default evaluated from Devices description)
+        "extra": <xxx> ... // optional, Additional buffer size. By default "4K"
+        "max": <....>, // optional. If specified Hub will allocate specified size of VM and will expand physical on demand
+        "max-msg-size": [<...>, <...>] // Maximum expected size of one message (input/output)
+        "default": ... // optional. Biffer size by default for Device
+    },
+    "mode": "exclusive"|"shared"|"rw", // Optional. Default sharing mode for all Devices
+    "noimg": [25, 50], // Optional. List of FPGA chips for whose do not exists images (because of insufficient capacity)
+    "devices": {  // Mandatory. List of devices in project
+        "<dev-id>": {
+            "id": <n>, // Mandatory. Index of Device in RTL
+            "uuid": "<uuid>", // Optional. UUID for universal devices, which can be reused between projects
+            "version": "xx.yy[.zz]", // Mandatory. Version of Device. Hub will check Device compatibility by this version (xx must be equal, yy - not less) during Client loading
+            "buf": xxx  // Size of required buffer for in+out. Should be specified here or in "buf-size"."default" parameter. "max-msg-size" MUST be specified
+            "mode": "exclusive"|"shared"|"rw", // Optional. Sharing mode: "exclusive" - only one client can handle this Device [default], "shared" - any nuber of client can handle device, "rw" - Reader/Writers mode. One Writer + any number of Readers 
+            "config": {...} // Defined by Device. Internals of RTL configuration
+        },
+        ...
+    },
+    "src": "[http://]/path/to/sources/" // Optional. Path to sources for this Project. Used to remote building of FPGA image
+}
+
+------------------------------------------------------------
+
+Client login (passed as command to Hub control Unix socket)
+
+{
+    // Mandatory (command field). 
+    "cmd": "login",
+
+    "pid": <pid>, // Mandatory. PID of Client process
+    "uuid": "<uuid>", // Mandatory if 'pack' is absent and "mode" is not "observer". Defined UUID of project to join to.
+    "name": "<client name>", // Optional. Used in error messages in case of sharing violation to name Client that violate sharing.
+    "pack": "/path/to/pack/file", // Mandatory for 'mode' of 'main' or 'any'. Pack file to load to FPGA.
+    "buf-size": ..., // Optional. Meaning the same as in Pack file configuration. Maximum of these 2 files used to create real memory configuration
+    "mode": "main" | "reader" | "any" | "observer" | "observer+", // Optional. Default is 'main'
+    "devices": { // Mandatory. List of devices, needed to Client
+        "<dev-id>": {
+            "uuid": "<uuid>", // Optional. UUID of generic device. These devices matched by UUID, not by name
+            "version": "xx.yy", // Required. Version of Device that Client is expectin to work
+            "min-version": "xx.yy", // Optional. Minimal version of Device that Client still supported
+            "mode": "r"|"w"|"rw", // Optional. Mode of Device usage: read only, write only, read-write
+            "buf-size": <...>, // Optional. Buffer size override. Maximum of Pack/CLient wil be used
+            "optional": false // Optional. Set to true if this Device can be absent
+            "history": <...> // Optional. Number of messages to keep to allow new Clients to be attached on-the-run
+            "virtual": false // Optional. See later
+        }
+    }     
+}
+'client-mode' values:
+    'main' - Client SHOULD load FPGA. If FPGA already loaded - error generated and Client nacked
+    'reader' - Client expected to attach to already loaded FPGA. If no FPGA loaded - error generated and Client nacked
+    'any' - Client can work in both modes.
+    "observer" - Client do not interact with Devices, and can be joined to ANY Project (or even without loaded project). 
+                 Main purpose of such client consume statistics and notifications events
+    "observer+" - Sane as "observer", but includes Packet payload as part of Notification message
+
+Virtual devices:
+    Do not attached to any hardware. Implemented inside Hub as bridges between its input and output. All records, pushed to input, passed directly from its output.
+    Used by Clients to communicate between each other.
+    "uuid" field is a mandatory for such Devices.
+
+
+Loading mode for differnet 'mode' field:
+    w: Load FPGA from Pack file. If FPGA already loaded - fail
+    rw: If no FPGA loaded - load it from Pack file, otherwise check for compatibility with loaded configuration and join (as directed by active Drivers list)
+    r: Join to existent FPGA configuration. 
+
+
+Answer
+{
+    "result": "ok",
+<<<    "mem-file": "/path/to/file/to/mmap",    // Memory buffer file. Should be mapped by Client. >>> Pass as file handle in auxmessage SCM_RIGHTS
+    "in-file": "{uuid}",                     // Client -> Hub private communication channel (Unix socket abstract name). Connected to by client
+    "buf-size": <size-in-bytes>,            // Size of area for mmap. Can be more than Memory buffer file size
+    "devices": { // Available devices. Including missmatched by version
+        "<dev-id>": { // Dev-id will match Dev ids from Login request
+            "id": <n>   // Numeruc ID of device. Will be ansent if device can't be used
+            "error": "<msg>", // Reason, why device can't be used. Will be absent if Device could be used
+            "version": "xxx.yyy[.xxx]", // Actual Device version
+            "buf": <...>, // Buffer size negothiated for this device. Can be safely discarded
+        }
+    }
+}
+
+NACK (got in /path/to/output/file for Login message)
+{
+    "result": "error",
+    "error": "error message",
+    "devices": { // List of Devices which blocks Client loading (if any). Will be absent if Projects incompatible or can't be matched
+        "<dev-id>": "error mesage"
+    }
+}
+---------------------------------------------------------------
+
+JSON messages (passed between Hub and Client in both directions)
+
+Message (Hub to Client)
+{
+    "async": "message",
+    "messages": [
+        ["i"|"w"|"e"|"f", "<message>"], ... // First cell - error level (info, warning, error, fatal)
+    ]
+}
+No answer expected
+
+Options setup for device (Client to Hub)  [see also the same command in Global Peer]
+{
+    "cmd": "options",
+    "dev-id": <n>, // Numeric Device ID.
+    <opt-name>: <opt-value>,
+    ...
+}
+Possible <opt-name>:
+    "error-level": "i"|"w"|"e" - Filter for error messages. Info/Warning/Errors (Errors and Fatal always enabled)
+    "buf-size": <n>, // Adjust Buffer size - New buffer size in bytes    - for Device only
+    "history": <n> // Adjust history size                                - for Device only
+    "mode": "r" | "w" | "rw" // Change sharing mode for Device           - for Device only
+
+Answer (for Client -> Hub direction)
+    Ok - if applied (+ the same fields as in request with new values), or "error" with reason to reject
+
+
+Notificatiation control (Client to Hub)
+{
+    "cmd": "notify",
+    "filter" : [...] // Optional. Notification filter.
+}
+Types of Notification filters:
+null (instead of Array) or empty array - turn notification off
+"..." - Global notificatiation without extra paramaters
+{
+    "target": ["<type of target>", <index>], // ex: ["client", 1] or ["device", 4]
+    ... extra keys (depends on target type) ...  ex: "direction": "in"  - Only inbound messages
+}
+Answer: {"result": "ok"}
+
+Quit (both way) - Notificatiuon of session finished. Clent exit or Hub shutdown/restart
+{
+    "cmd": "quit",
+    ["message": "why"]
+}
+Answer (only Client->Hub): {"result": "ok"}
+
+Answers (any, both way)
+{
+    "result": "ok" | "error" (may be more),
+    "error": "error message" // Will be used in 'error' answers
+    ...
+}
+
+
+Attach new Client to Device(s) (Client -> Hub)
+{
+    "cmd": "attach",
+    "devices": {
+        .... contents of <dev-id> Object from Login record ...
+    }
+}
+Answer - same as for Login record, but restructed to only these devices
+
+Detach Device(s) (Client -> Hub)
+{
+    "cmd": "detach",
+    "defices": [ <n>, ...] // List of numeric ID of Devices to detach
+}
+Answer - ok or Error with list of unknown IDs (this is only one reason to fail)
+
+
+==========================================================================================
+Binary records (64 bit):
+
+Common format:
+    uint8_t: <command>
+    uint8_t: <arg1>
+    uint16_t: <arg2>
+    uint32_t: <arg3>
+
+
+Commnands:
+'{' - JSON paylod. All recieved message consist JSON cmd.
+
+1: Record pass (both directions) - Issued on Record recieve/transmit (by Hub / Client)
+    arg1 - Device ID (numeric)
+    arg2 - Record size
+    arg3 - Shift in Memory Buffer
+
+2: Record return (both direction) - Issued by Hub/Client when they finish processing record
+    arg1 - Device ID (numeric)    [not used by Hub, can be passed as 0]
+    arg2 - Record size            [not used by Hub, can be passed as 0]
+    arg3 - Shift in Memory Buffer
+
+3: Allocate Record (Client to Hub) - Allocate one or more Records for use as Send media
+    arg1 - Tag (can be Device ID or whatever)
+    arg2 - Record size
+    arg3 - Number of records
+
+4: Record allocated (Hub to Client) - Answer to #3
+    arg1 - Tag (same as in #3)
+    arg2 - Real record size
+    arg3 - Shift to memory buffer or -1 (if can't allocate)
+If Recors wasn't allocated 2 records will be send back: #4 with arg3==-1 and JSON 'Error' answer with message
+
+5: Records allocate (Hub to client) - Answer to #3 if more than 1 records returned
+    arg1 - Tag (same as in #3)
+    arg2 - Real record size
+    arg3 - Shift to memory buffer
+This buffer should be used as one of returned record. Also it will contain list of other records:
+    uint32_t records_counter;
+    uint32_t records_shifts[records_counter];
+
+6: Record(s) free (Client to Hub) - Return records, allocated by #3
+    arg1 - Record(s) count
+    arg2 - 
+        0 - <arg3> is a record to free, <arg1> should be 1
+        1 - <arg3> point to memory buffer with list of shifts (uint32_t) to records which should be freed
+        2 - same as 2, but record, pointed by <arg3> also should be freed
+    arg3 - Shift to memory buffer
+
+7: Notification record. Record with notification data (ordinary record) follow
+    arg1 - Record origing or destination: Client index (or -1 if comes from global interface or not related to any Client)
+    arg2 - Device id + direction (in high bit). -1 if not from Device
+    arg3 - Shift to Observer Clients memory file to image of this Packet (or -1). Size shoud be extracted from following packet(s). Image should be returned back to Hub by #2 request.
+
+==========================================================================================
+Global JSON commands (feed through Unix socket /var/sito/fpga-hub).
+
+JSON writes as message.
+All JSON commands returned JSON answer with mandatory field "result" with value "ok" or "error". If "result" is "error" record will contains field "message" with human readable description
+of error. In any case other fields also possible.
+
+There are possible async notifications from Hub to Client (but only from connected Client, not from Global peer). They will include mandatory field "async": "<source>".
+
+Some JSON command can also be passed from Client to its private communication channel (marked as "+"). 
+
+All command has required prefix:
+{
+    "cmd": "<command>",     // Command 
+}
+
+
+Commands:
+    "login" - see above
+
+Statistics request "+":
+{
+    "cmd": "stat",
+    "out-file": ...
+    "filter": .... // Optional filter. Format the same as in "notification control" (but with different filters)
+      // Filter of type {"target": "stat", "interval": <secounds>} setup periodic Stat notification. Available only for connected Clients
+}
+
+Answer:
+{
+    "resuit": "ok",
+    "clients": [
+        {
+            "login": ... copy of Login record from Client ...
+            "config": ... copy of Login answer record ...
+            "index": <n>  // Unique index of Client. Not reused on Cleint connection/disconnection. Used in 'stat' answer, notification records, etc.
+        }
+    ],
+    "devices": {
+        "<dev-id>": {
+            ... dev info ...
+        }
+    },
+    // Statistics and status by subsystems
+    "memory": { ... }
+    "options": {...}
+    ....
+}
+
+Async notification is the same, but "result" replaced by "async": "stat"
+
+JSON schema request "+"
+{
+    "cmd": "json-schema",
+    "out-file": ...
+}
+
+Answer:
+{
+    "result": "ok",
+    "global-peer-request": { JSON schema for Global Peer requests },
+    "global-peer-answer": { JSON schema for Global Peer answers },
+    "shared-request": { JSON schema for shared part between Global Peer and Client request },
+    "shared-answer": { JSON schema for shared part between Global Peer and Client answers },
+    "client-request": ...
+    "client-answer": ...
+}
+
+Write opaque data (Client to Hub) "+"
+{
+    "cmd": "write-opaque",
+    "<key>": <data>
+    ...
+}
+Append all <key> (except "cmd") to internal Object
+Key should be formatted as "<UUID>|<Human Readable String>"
+Set <data> to null to remove key from internal Object
+
+Answer: {"result": "ok"}
+
+Drop internal Object
+{
+    "cmd": "drop-opaque"
+}
+
+Answer: {"result": "ok"}
+
+Request opaque data (Client to Hub) "+"
+{
+    "cmd": "read-opaque",
+    "keys": [ <key1>, <key2>, ....] // Optional for command line client
+}
+Retrieved all "<keys>" from internal Object and send them as "ok" response. Keys missing from internal Object will not be included in "ok" response.
+If "keys" is absent - all internal Object will be sent (can be used only in Command line client).
+
+Write/Read opaque data intended to store abitrary configuration (and run time) information between different Clients 
+
+
+Options setup (Client to Hub) ["+" - see the same command in Client Local list]
+{
+    "cmd": "options",
+   [ "save": true ] // If this key set to true than all current option override will be saved and restored after Hub restart. If it set to false all saved overrides will be cleared.
+    <opt-name>: <opt-value>,
+    ...
+}
+This command shared with the same for Client. Any of options, listed here, can also be passed from Client to Hub via its local channel (note - no 'dev-id' key in this case. 'save' also prohibited)
+Possible <opt-name>:
+    "error-level": "i"|"w"|"e" - Filter for error messages. Info/Warning/Errors (Errors and Fatal always enabled)
+    "xvc-port": <n> - Sert port for XVC server
+    "xvc-buf-size": 2048
+    "xvc-enable":  "auto" | true | false
+    "jtag-mode": "auto" | "ftdi" | "bitbang" | "disable"
+    "jtag-freq": <n>
+    "jtag-freq-lock": false | true
+    "loader-mode": "auto" | "spi" | "jtag"
+Set <opt-value> to restore default from config file 
+
+Answer: as usual
+
+Load FPGA file
+{
+    "cmd": "load",
+    "file": "/path/to/bin/file.bin" or null,
+    ["lock": true] // Set to true to prevent Client from loading other files. These requests will be silently dropped
+}
+Null for "file" will reset FPGA and clear lock (if any)
+Answer: as usual
+
+Binlog control
+{
+    "cmd": "binlog",
+    ["file": "/path/to/binlog/file/binlog.bin"]
+    ["close": true]
+    {"filter": {...}]
+}
+Fields presence by actions:
+Start Binlog:
+    +file
+    -close
+    +filter [optional]
+Flush binlog file:
+    -file
+    -close
+    -filter
+Close binlog file:
+    -file
+    +close
+    -filter
+Answer - Ok for Flush/Close:
+{
+    "result": "ok",
+    "file": "/path/to/binlog/file/binlog.bin",
+    "recno": <n>, // - Number of records emited so far
+    "size": <n> // - Size of Binloig file (in bytes)
+    "usize": <n> //- Size of unpacked BinLog file (in bytes)
+}
+Answer for Close/Flush if Binlog not opened:
+{
+    "result": "ok",
+    "message": "No Binlog file opened"
+}
+Other answers - as usual
