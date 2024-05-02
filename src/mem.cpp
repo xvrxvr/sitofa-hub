@@ -157,7 +157,20 @@ std::pair<size_t, void*> MemAlloc::alloc(size_t size, bool can_fail)
                 error("No more memory");
                 return {-1u, NULL};
             }
-            expand_shared_mem(first_to_allocate);
+            // Expand Shared Memory file
+            auto new_size = std::min(max_memory_size * max_block_size(), round_up((first_to_allocate+1) * max_block_size(), MemPageSize));
+            if (ftruncate(buf_fd, new_size) == -1) // Can't aloocate - emit warning and try again with minimum required size
+            {
+                warning(std::format("SharedMem:alloc: Can't extend Shared Memory file to {} bytes", new_size));
+                auto nnew_size = std::min(max_memory_size * max_block_size(), round_up((first_to_allocate) * max_block_size(), MemPageSize));
+                if (nnew_size == new_size || ftruncate(buf_fd, nnew_size) == -1) // Still can't allocate
+                {
+                    if (can_fail) return {-1u, NULL};
+                    ERRORF("Shared memory file expanding fail (requested size is {})", nnew_size);
+                }
+                new_size = nnew_size;
+            }
+            cur_memory_size = new_size / max_block_size();
         }
         index_in_level = split_down(free_lists.size()-1, level, first_to_allocate++);
     }
