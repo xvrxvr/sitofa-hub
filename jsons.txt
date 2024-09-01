@@ -75,8 +75,9 @@ Project configuration (file /project.json in zip file with Packet to load)
     },
     "mode": "exclusive"|"shared"|"rw", // Optional. Default sharing mode for all Devices
     "noimg": [25, 50], // Optional. List of FPGA chips for whose do not exists images (because of insufficient capacity)
-    "devices": {  // Mandatory. List of devices in project
-        "<dev-id>": {
+    "devices": [  // Mandatory. List of devices in project
+        {
+            "name": "<device name>",
             "id": <n>, // Mandatory. Index of Device in RTL
             "uuid": "<uuid>", // Optional. UUID for universal devices, which can be reused between projects
             "version": "xx.yy[.zz]", // Mandatory. Version of Device. Hub will check Device compatibility by this version (xx must be equal, yy - not less) during Client loading
@@ -102,9 +103,10 @@ Client login (passed as command to Hub control Unix socket)
     "name": "<client name>", // Optional. Used in error messages in case of sharing violation to name Client that violate sharing.
     "pack": "/path/to/pack/file", // Mandatory for 'mode' of 'main' or 'any'. Pack file to load to FPGA.
     "buf-size": ..., // Optional. Meaning the same as in Pack file configuration. Maximum of these 2 files used to create real memory configuration
-    "mode": "main" | "reader" | "any" | "observer" | "observer+", // Optional. Default is 'main'
-    "devices": { // Mandatory. List of devices, needed to Client
-        "<dev-id>": {
+    "mode": "main" | "reader" | "any" | "observer" | "observer+" | "simulator", // Optional. Default is 'main'
+    "devices": [ // Mandatory. List of devices, needed to Client
+        {
+            "name": "<device name>", // Name of device
             "uuid": "<uuid>", // Optional. UUID of generic device. These devices matched by UUID, not by name
             "version": "xx.yy", // Required. Version of Device that Client is expectin to work
             "min-version": "xx.yy", // Optional. Minimal version of Device that Client still supported
@@ -114,7 +116,10 @@ Client login (passed as command to Hub control Unix socket)
             "history": <...> // Optional. Number of messages to keep to allow new Clients to be attached on-the-run
             "virtual": false // Optional. See later
         }
-    }     
+    ]
+    // For "simulator"
+    "project-name": "<name>" [opt]
+    "project-uuid": "<uuid>"     
 }
 'client-mode' values:
     'main' - Client SHOULD load FPGA. If FPGA already loaded - error generated and Client nacked
@@ -123,6 +128,12 @@ Client login (passed as command to Hub control Unix socket)
     "observer" - Client do not interact with Devices, and can be joined to ANY Project (or even without loaded project). 
                  Main purpose of such client consume statistics and notifications events
     "observer+" - Sane as "observer", but includes Packet payload as part of Notification message
+    "simulator" - Client is a simulator for some FPGA Project (specified by "project-uuid" and optional "project-name" fields). Simulator holds all Project Devices
+                  and Hub route all Device requests to Simulator and output from Simulator feed as Devicees answers.
+                  Simulator got 'login' request from "main" Client (it forwarded by Hub). Then Simulator answers to Hub by "result": "ok" to accept simulation
+                  or by "result": "error" - to reject
+                  Ok answer should include "devices" array (the same as "login" with clarifications of memory setup for device, or "rejected": true field if simulator
+                  will not process this device. In this case Hub will discard all incoming packets to this Device)
 
 Virtual devices:
     Do not attached to any hardware. Implemented inside Hub as bridges between its input and output. All records, pushed to input, passed directly from its output.
